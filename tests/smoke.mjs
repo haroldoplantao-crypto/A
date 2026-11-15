@@ -25421,13 +25421,16 @@ await test('Memed: abre com o paciente da tela, o emitido vira registro em Docum
     window.MdHub = { command: { send: async (mod, cmd, arg) => { enviados.push([mod, cmd, arg]); } }, module: { show: (m) => enviados.push(['show', m]) }, event: { add() {} } };
     out.escondidoSemFuncao = Array.from(document.querySelectorAll('.memed-btn')).every(b => b.style.display === 'none');
     memedRx._token = 'tok-teste'; memedRx._pronto = true; memedRx._ambiente = 'homologacao';
-    store.setList('pacientes', [{ _id: 'pac-memed-1', nome: 'Maria Memed Teste', cpf: '529.982.247-25', nascimento: '1980-03-15', telefone: '(73) 99999-0000', sexo: 'Feminino', peso: '62,5' }]);
+    let pedidosDeToken = 0;
+    memedRx._pedirToken = async () => { pedidosDeToken++; return { status: 200, d: { ok: true, token: 'tok-teste', script_url: 'https://integrations.memed.com.br/x.js', ambiente: 'homologacao' } }; };
+    store.setList('pacientes', [{ _id: 'pac-memed-1', nome: 'Maria Memed Teste', cpf: '529.982.247-25', nascimento: '1980-03-15', telefone: '(73) 99999-0000', sexo: 'Feminino', peso: '62,5', email: 'maria.teste@exemplo.com' }]);
     location.hash = '#documentos'; await new Promise(res => setTimeout(res, 300));
     documentos.novo();
     document.querySelector('#form-documentos [name="nome"]').value = 'Maria Memed Teste';
     out.abriu = await memedRx.abrir('documentos');
     const pac = (enviados.find(e => e[1] === 'setPaciente') || [])[2] || {};
-    out.paciente = pac.nome === 'Maria Memed Teste' && pac.cpf === '52998224725' && pac.data_nascimento === '15/03/1980' && pac.telefone === '73999990000' && pac.peso === 63 && pac.sexo === 'Feminino' && pac.idExterno === 'pac-memed-1';
+    out.paciente = pac.nome === 'Maria Memed Teste' && pac.cpf === '52998224725' && pac.data_nascimento === '15/03/1980' && pac.telefone === '73999990000' && pac.peso === 63 && pac.sexo === 'Feminino' && pac.idExterno === 'soft-pac-memed-1' && pac.email === 'maria.teste@exemplo.com';
+    out.tokenNovo = pedidosDeToken === 1;
     out.mostrou = enviados.some(e => e[0] === 'show' && e[1] === 'plataforma.prescricao');
     /* sem nome não abre nem manda nada */
     document.querySelector('#form-documentos [name="nome"]').value = '';
@@ -25445,6 +25448,19 @@ await test('Memed: abre com o paciente da tela, o emitido vira registro em Docum
     document.getElementById('memed-ver-abrir').click();
     await new Promise(res => setTimeout(res, 50));
     out.reabre = enviados.some(e => e[1] === 'viewPrescription' && e[2] === '987654');
+    /* excluída na Memed: o registro fica marcado e não tenta abrir */
+    try { modal.close(); } catch (e) {}
+    out.excluiu = memedRx._aoExcluir(987654) === 1 && store.getById('documentos', salvo._id).memed_excluido === true;
+    const antesVer = enviados.length;
+    await memedRx.ver(store.getById('documentos', salvo._id));
+    out.naoAbreExcluida = enviados.length === antesVer && /excluída/.test(historico._detalheDe('documentos', store.getById('documentos', salvo._id)));
+    /* troca de usuário: sai da Memed (logout obrigatório em computador compartilhado) */
+    await memedRx.sair();
+    out.logout = enviados.some(e => e[0] === 'plataforma.sdk' && e[1] === 'logout') && memedRx._token === null && !memedRx._pronto;
+    /* listeners ligados uma vez só */
+    const ligados = []; window.MdHub.event.add = (n) => ligados.push(n);
+    memedRx._ouvindo = false; memedRx._ouvir(); memedRx._ouvir();
+    out.umaVez = ligados.length === 2 && ligados.includes('prescricaoImpressa') && ligados.includes('prescricaoExcluida');
     try { modal.close(); } catch (e) {}
     store.setList('pacientes', []);
     return out;
@@ -25454,6 +25470,9 @@ await test('Memed: abre com o paciente da tela, o emitido vira registro em Docum
   assert(r.semNomeNaoAbre, 'sem paciente não abre nem envia nada');
   assert(r.registro && r.busca, 'o emitido vira registro em Documentos emitidos');
   assert(r.modal && r.reabre, 'o registro mostra os itens e reabre na Memed');
+  assert(r.tokenNovo, 'token novo a cada atendimento');
+  assert(r.excluiu && r.naoAbreExcluida, 'receita excluída na Memed fica marcada e não é aberta');
+  assert(r.logout && r.umaVez, 'logout da Memed na troca de usuário; avisos ligados uma vez');
   await page.close();
 });
 

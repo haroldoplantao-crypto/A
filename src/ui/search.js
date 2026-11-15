@@ -312,7 +312,7 @@ const historico = {
     if (mod === 'recuperacao') return [it.procedimento, it.tipo_anestesia].filter(Boolean).join(' · ');
     if (mod === 'financeiro') return [it.procedimento, it.convenio, it.status].filter(Boolean).join(' · ');
     if (mod === 'documentos') {
-      const t = { atestado: '📝 Atestado', declaracao: '🕐 Declaração de comparecimento', laudo: '🧾 Laudo', exames: '🧪 Solicitação de exames', memed: '💊 Emitido pela Memed' }[it.modelo] || '📄 Documento';
+      const t = { atestado: '📝 Atestado', declaracao: '🕐 Declaração de comparecimento', laudo: '🧾 Laudo', exames: '🧪 Solicitação de exames', memed: it.memed_excluido ? '💊 Memed — excluída' : '💊 Emitido pela Memed' }[it.modelo] || '📄 Documento';
       const extra = it.modelo === 'memed' ? (Array.isArray(it.memed_itens) ? it.memed_itens.slice(0, 3).map(x => x.nome).join(', ') + (it.memed_itens.length > 3 ? '…' : '') : '')
         : it.modelo === 'exames' ? (Array.isArray(it.exames_itens) && it.exames_itens.length
           ? it.exames_itens.length + ' exame(s): ' + it.exames_itens.slice(0, 3).map(x => x.nome || x.codigo).join(', ') + (it.exames_itens.length > 3 ? '…' : '') : '')

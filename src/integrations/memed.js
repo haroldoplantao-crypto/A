@@ -53,6 +53,9 @@ const memedRx = {
   /* Os dados do médico só são pedidos UMA vez, quando a Memed ainda não o
      conhece. Ficam guardados neste aparelho, por conta, para não perguntar
      de novo — são do médico, não de paciente. */
+  _emailConta() {
+    try { return ((cloud.session() || {}).user || {}).email || ''; } catch (e) { return ''; }
+  },
   _chavePrescritor() { return 'soft_memed_prescritor_v1:' + memedRx._uid(); },
   _prescritorSalvo() {
     try { return JSON.parse(localStorage.getItem(memedRx._chavePrescritor()) || 'null'); } catch (e) { return null; }
@@ -69,20 +72,25 @@ const memedRx = {
         campo('nome', 'Nome', p.nome) + campo('sobrenome', 'Sobrenome', p.sobrenome) +
         campo('cpf', 'CPF', p.cpf, ' inputmode="numeric"') + campo('nasc', 'Data de nascimento (dd/mm/aaaa)', p.data_nascimento, ' placeholder="dd/mm/aaaa"') +
         campo('crm', 'Número do CRM', p.crm, ' inputmode="numeric"') + campo('uf', 'UF do CRM', p.uf, ' maxlength="2"') +
+        campo('email', 'E-mail', p.email || memedRx._emailConta(), ' inputmode="email"') + campo('tel', 'Celular (opcional)', p.telefone, ' inputmode="tel"') +
         '</div>',
         '<button class="btn" id="memed-p-cancelar">Cancelar</button><button class="btn btn-primary" id="memed-p-ok">Cadastrar e abrir</button>');
       const v = id => ((document.getElementById('memed-p-' + id) || {}).value || '').trim();
       document.getElementById('memed-p-cancelar').addEventListener('click', () => { modal.close(); resolve(null); });
       document.getElementById('memed-p-ok').addEventListener('click', () => {
-        const dados = { nome: v('nome'), sobrenome: v('sobrenome'), cpf: memedRx._so(v('cpf')), data_nascimento: v('nasc'), crm: memedRx._so(v('crm')), uf: v('uf').toUpperCase(), conselho: 'CRM' };
+        const dados = { nome: v('nome'), sobrenome: v('sobrenome'), cpf: memedRx._so(v('cpf')), data_nascimento: v('nasc'), crm: memedRx._so(v('crm')), uf: v('uf').toUpperCase(), conselho: 'CRM', email: v('email'), telefone: memedRx._so(v('tel')) };
+        /* a Memed exige o e-mail no cadastro do prescritor */
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(dados.email)) { toast('Informe um e-mail válido — a Memed exige no cadastro.', 'warn'); return; }
         try { localStorage.setItem(memedRx._chavePrescritor(), JSON.stringify(dados)); } catch (x) {}
         modal.close();
         resolve(dados);
       });
     });
   },
+  /* A Memed pede o token MAIS RECENTE do prescritor a cada atendimento:
+     ele é sempre pedido de novo ao servidor. Se mudou depois de o script já
+     estar carregado, o script é recarregado com o novo (uma vez). */
   async _garantirToken() {
-    if (memedRx._token) return true;
     let res = await memedRx._pedirToken(null);
     let tentativas = 0;
     while (!res.d.ok && res.d.precisaCadastro && tentativas < 3) {
@@ -92,6 +100,7 @@ const memedRx = {
       res = await memedRx._pedirToken(dados);
     }
     if (!res.d.ok || !res.d.token) throw new Error(res.d.erro || ('A Memed não liberou o acesso (HTTP ' + res.status + ').'));
+    if (memedRx._token && memedRx._token !== res.d.token && memedRx._pronto) memedRx._descarregar();
     memedRx._token = res.d.token;
     memedRx._scriptUrl = res.d.script_url;
     memedRx._ambiente = res.d.ambiente || '';
@@ -99,15 +108,30 @@ const memedRx = {
   },
 
   /* ---- 2. SCRIPT DA MEMED: uma vez só ---- */
+  SCRIPT_ID: 'memed-prescricao-script',
+  _ouvindo: false,
+  _ouvir() {
+    /* os avisos da Memed se ligam UMA vez só, mesmo que o módulo reinicie */
+    if (memedRx._ouvindo) return;
+    memedRx._ouvindo = true;
+    try { window.MdHub.event.add('prescricaoImpressa', d => memedRx._aoEmitir(d)); } catch (e) {}
+    try { window.MdHub.event.add('prescricaoExcluida', id => memedRx._aoExcluir(id)); } catch (e) {}
+  },
+  _descarregar() {
+    try { const el = document.getElementById(memedRx.SCRIPT_ID); if (el) el.remove(); } catch (e) {}
+    memedRx._pronto = false; memedRx._carregando = null; memedRx._ouvindo = false;
+  },
   _carregarScript() {
     if (memedRx._pronto) return Promise.resolve(true);
     if (memedRx._carregando) return memedRx._carregando;
+    /* guarda na página: o script da Memed entra uma única vez */
+    if (document.getElementById(memedRx.SCRIPT_ID)) memedRx._descarregar();
     memedRx._carregando = new Promise((resolve, reject) => {
       if (!/^https:\/\/[a-z0-9.-]+\.memed\.com\.br\//.test(memedRx._scriptUrl)) { reject(new Error('Endereço do script da Memed inesperado.')); return; }
       const s = document.createElement('script');
       s.src = memedRx._scriptUrl;
       s.dataset.token = memedRx._token;
-      s.id = 'memed-sinapse';
+      s.id = memedRx.SCRIPT_ID;
       const limite = setTimeout(() => reject(new Error('A janela da Memed demorou demais para carregar. Confira a internet e tente de novo.')), 45000);
       s.addEventListener('error', () => { clearTimeout(limite); reject(new Error('Não consegui carregar a Memed.')); });
       s.addEventListener('load', () => {
@@ -115,7 +139,7 @@ const memedRx = {
           window.MdSinapsePrescricao.event.add('core:moduleInit', m => {
             if (!m || m.name !== 'plataforma.prescricao') return;
             clearTimeout(limite);
-            try { window.MdHub.event.add('prescricaoImpressa', d => memedRx._aoEmitir(d)); } catch (e) {}
+            memedRx._ouvir();
             memedRx._pronto = true;
             resolve(true);
           });
@@ -137,7 +161,10 @@ const memedRx = {
     const nasc = (cad && (cad.nascimento || cad.nasc)) || g('nascimento') || '';
     const nascBR = /^\d{4}-\d{2}-\d{2}$/.test(nasc) ? nasc.split('-').reverse().join('/') : (/^\d{2}\/\d{2}\/\d{4}$/.test(nasc) ? nasc : '');
     const sexoTxt = String((cad && cad.sexo) || g('sexo') || '').trim().toUpperCase();
-    const p = { idExterno: (cad && cad._id) || ('soft-' + utils.semAcento(nome).replace(/[^a-z0-9]+/g, '-')), nome };
+    /* identificador único, sempre com o prefixo do Soft (exigência da Memed) */
+    const p = { idExterno: 'soft-' + ((cad && cad._id) || utils.semAcento(nome).replace(/[^a-z0-9]+/g, '-')), nome };
+    const email = String((cad && cad.email) || g('email') || '').trim();
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) p.email = email;
     p.sexo = sexoTxt.startsWith('F') ? 'Feminino' : sexoTxt.startsWith('M') ? 'Masculino' : undefined;
     if (cpf.length === 11) p.cpf = cpf;
     if (nascBR) p.data_nascimento = nascBR;
@@ -201,9 +228,35 @@ const memedRx = {
     } catch (e) { return null; }
   },
 
+  /* Excluída na Memed: o registro fica, marcado, e não tenta mais abrir
+     um documento que não existe lá */
+  _aoExcluir(id) {
+    const alvo = String(id == null ? '' : (typeof id === 'object' ? (id.id || id.prescricaoId || '') : id));
+    if (!alvo) return 0;
+    let n = 0;
+    try {
+      (store.list('documentos') || []).forEach(r => {
+        if (!r || r.modelo !== 'memed' || String(r.memed_id) !== alvo || r.memed_excluido) return;
+        const salvo = store.save('documentos', Object.assign({}, r, { memed_excluido: true, memed_excluido_em: new Date().toISOString() }));
+        try { store.notificarNuvem(salvo, 'Documento da Memed'); } catch (e) {}
+        n++;
+      });
+    } catch (e) {}
+    if (n) toast('💊 Receita excluída na Memed — o registro em Documentos emitidos foi marcado como excluído.');
+    return n;
+  },
+  /* Troca de usuário ou saída: a Memed exige limpar a sessão dela no
+     aparelho quando médicos dividem o computador */
+  async sair() {
+    try { if (window.MdHub && memedRx._pronto) await window.MdHub.command.send('plataforma.sdk', 'logout'); } catch (e) {}
+    memedRx._token = null;
+    memedRx._descarregar();
+    return true;
+  },
   /* Reabrir um emitido: o PDF assinado está na Memed */
   async ver(rec) {
     if (!rec || !rec.memed_id) { toast('Este documento não tem o identificador da Memed.', 'warn'); return; }
+    if (rec.memed_excluido) { toast('Esta receita foi excluída na Memed — não há mais documento para abrir.', 'warn'); return; }
     try {
       if (!(await memedRx._garantirToken())) return;
       await memedRx._carregarScript();
@@ -216,6 +269,7 @@ const memedRx = {
     return '<p style="font-size:.88rem;margin:0 0 8px"><b>' + e(rec.nome || '') + '</b> — emitido pela Memed em ' + e(utils.formatarData(rec.data) || '') + '</p>' +
       (itens.length ? '<ul style="margin:0 0 8px;padding-left:18px;font-size:.86rem">' + itens.map(it =>
         '<li>' + e(it.nome) + (it.tuss ? ' <small>(TUSS ' + e(it.tuss) + ')</small>' : '') + (it.receituario ? ' <small>— ' + e(it.receituario) + '</small>' : '') + '</li>').join('') + '</ul>' : '') +
+      (rec.memed_excluido ? '<p style="font-size:.84rem;color:var(--danger);margin:0 0 6px"><b>Excluída na Memed</b> — o documento não existe mais lá.</p>' : '') +
       '<p style="font-size:.8rem;color:var(--text-mute);margin:0">O documento assinado fica na Memed. Para reimprimir ou reenviar ao paciente, abra na Memed.</p>';
   }
 };
@@ -236,4 +290,6 @@ memedRx.checar = async function () {
   return ok;
 };
 window.memedRx = memedRx;
+/* trocou o usuário ou a clínica nesta aba: sai da Memed também */
+try { if (typeof contextoAba !== 'undefined' && contextoAba.aoMudar) contextoAba.aoMudar(() => { memedRx.sair(); }); } catch (e) {}
 window.addEventListener('load', () => { setTimeout(() => { memedRx.checar(); }, 4000); });

@@ -330,6 +330,8 @@ const auth = {
          do cofre ainda pertencem à pessoa que está saindo. O adaptador da nuvem
          remove somente cache confirmado; WAL e snapshots cifrados ficam. */
       if (opts.broadcast !== false) { try { contextoAba.bloquearOutrasAbas(); } catch (e) {} }
+      /* sessão da Memed no aparelho sai junto (exigência da Memed) */
+      try { if (typeof memedRx !== 'undefined') memedRx.sair(); } catch (e) {}
       try { cloud.logout({ silent: true }); } catch (e) {}
       try { sessionStorage.removeItem(auth.SESSION_KEY); } catch (e) {}
       try { sessionStorage.removeItem(cloud.SESSION_KEY); } catch (e) {}
